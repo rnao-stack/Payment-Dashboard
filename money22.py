@@ -15,7 +15,7 @@ from supabase import create_client, Client
 st.set_page_config(page_title="💳 입금·발주 관리", layout="wide")
 
 SUPABASE_URL = "https://fejlakmdfymuzcxgnjoe.supabase.co"
-SUPABASE_KEY = "sb_publishable_4McnllYr4tHrDaIN0U_I0Q_OjYthH3Z"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlamxha21kZnltdXpjeGduam9lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMzMTIxNjksImV4cCI6MjA5ODg4ODE2OX0.vX9powQMMCJbHwkYMUHDI9fbJ5ke83F-TSkQfMJi5MA"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CATEGORIES = ["제작(국내)", "제작(수입)", "사입", "건기식", "물품대", "물류비", "라벨비", "기타"]
