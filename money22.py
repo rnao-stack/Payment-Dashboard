@@ -170,10 +170,57 @@ def today_kst():
 # 4. 메인 UI 및 탭별 로직 (Tab 0 ~ Tab 4 완전체)
 # ==============================================================================
 
-tabs = st.tabs(["입금 등록", "발주서 등록", "상세내역 및 정산", "거래처 관리", "환율 분석", "입금 요약"])
+st.markdown(
+    """
+    <style>
+        div[data-testid="stRadio"] > label {
+            display: none;
+        }
+
+        div[data-testid="stRadio"] div[role="radiogroup"] {
+            display: flex;
+            gap: 0;
+            align-items: center;
+            border-bottom: 1px solid #e5e7eb;
+            margin-bottom: 28px;
+        }
+
+        div[data-testid="stRadio"] div[role="radiogroup"] label {
+            padding: 12px 12px 11px 12px;
+            margin: 0;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        div[data-testid="stRadio"] div[role="radiogroup"] label > div:first-child {
+            display: none;
+        }
+
+        div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
+            border-bottom-color: #ff4b4b;
+        }
+
+        div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) p {
+            color: #ff4b4b;
+            font-weight: 500;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+menu = st.radio(
+    "메뉴",
+    ["입금 등록", "발주서 등록", "상세내역 및 정산", "거래처 관리", "환율 분석", "입금 요약"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_menu"
+)
 
 # --- [Tab 0] 입금 내역 등록 (자동 연동 강화 버전) ---
-with tabs[0]:
+if menu == "입금 등록":
     st.header("입금 내역 등록 및 관리")
 
     if 'pay_form_reset_key' not in st.session_state:
@@ -572,7 +619,7 @@ with tabs[0]:
 
 
 # --- [Tab 1] 발주서 등록 및 관리 ---
-with tabs[1]:
+elif menu == "발주서 등록":
     st.header("📦 발주서 등록 및 관리")
 
     if 'order_search_reset_key' not in st.session_state:
@@ -820,7 +867,7 @@ with tabs[1]:
             st.info("내역 없음")
 
 # --- [Tab 2] 상세 내역 및 통합 정산 ---
-with tabs[2]:
+elif menu == "상세내역 및 정산":
     st.header("📋 상세 내역 및 통합 정산")
 
     if 'detail_search_reset_key' not in st.session_state:
@@ -1518,7 +1565,7 @@ with tabs[2]:
         st.info("입금 내역 없음")
         
 # --- [Tab 3] 거래처 관리 ---
-with tabs[3]:
+elif menu == "거래처 관리":
     st.header("🏢 거래처 정보 관리")
     
     # 1. 데이터 로드 및 정렬
@@ -1733,7 +1780,7 @@ with tabs[3]:
     else:
         st.info("📢 등록된 거래처 정보가 없습니다.")
 # --- [Tab 4] 환율 분석 ---
-with tabs[4]:
+elif menu == "환율 분석":
     st.header("📈 환율 데이터 분석 및 관리")
     
     # -------------------------------
@@ -2070,7 +2117,7 @@ with tabs[4]:
         st.info("환율 데이터를 업로드해 주세요.")
         
 # --- [Tab 5] 입금 요약 ---
-with tabs[5]:
+elif menu == "입금 요약":
     st.header("📊 입금 요약")
 
     if 'summary_search_reset_key' not in st.session_state:
