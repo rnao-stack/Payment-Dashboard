@@ -3196,7 +3196,7 @@ elif menu == "입금 요약":
                                 current_monthly['비교월'] == target_month
                             ].groupby('비교유형')['한화환산액'].sum()
 
-                            compare_types = ["사입", "제작", "물류비", "물품대", "건기식", "기타"]
+                            compare_types = ["사입", "제작", "건기식", "물류비", "물품대", "기타"]
                             rows = []
 
                             for compare_type in compare_types:
@@ -3264,7 +3264,7 @@ elif menu == "입금 요약":
                             current_monthly['비교월'].isin(target_months)
                         ].groupby('비교유형')['한화환산액'].sum()
 
-                        compare_types = ["사입", "제작", "물류비", "물품대", "건기식", "기타"]
+                        compare_types = ["사입", "제작", "건기식", "물류비", "물품대", "기타"]
 
                         total_2025 = sum(float(base_type_period.get(t, 0)) for t in compare_types)
                         total_2026 = sum(float(current_type_period.get(t, 0)) for t in compare_types)
