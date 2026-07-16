@@ -31,10 +31,54 @@ def get_supabase_data(table_name):
     """클라우드에서 데이터를 안전하게 가져오는 표준 함수"""
     try:
         res = supabase.table(table_name).select("*").execute()
-        if not res.data: return pd.DataFrame()
+        if not res.data:
+            return pd.DataFrame()
         return pd.DataFrame(res.data)
     except Exception as e:
         return pd.DataFrame()
+
+
+def clean_supabase_value(v):
+    try:
+        if isinstance(v, dict):
+            return {k: clean_supabase_value(val) for k, val in v.items()}
+
+        if isinstance(v, list):
+            return [clean_supabase_value(val) for val in v]
+
+        if v is None:
+            return ""
+
+        if isinstance(v, str):
+            if v.strip().lower() in ["nan", "none", "nat"]:
+                return ""
+            return v
+
+        if pd.isna(v):
+            return ""
+
+    except:
+        pass
+
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return v.strftime("%Y-%m-%d")
+
+    if isinstance(v, np.bool_):
+        return bool(v)
+
+    if isinstance(v, np.integer):
+        return int(v)
+
+    if isinstance(v, np.floating):
+        if np.isnan(v) or np.isinf(v):
+            return ""
+        return float(v)
+
+    if isinstance(v, Decimal):
+        return float(v)
+
+    return v
+
 
 def upsert_supabase_data(table_name, data):
     """데이터 저장 및 수정 (Upsert)"""
@@ -45,69 +89,121 @@ def upsert_supabase_data(table_name, data):
         if isinstance(data, dict):
             data = [data]
 
-        data = [
-            {k: ("" if v is None else v) for k, v in row.items()}
-            for row in data
-        ]
+        clean_data = []
 
-        supabase.table(table_name).upsert(data).execute()
+        for row in data:
+            clean_row = {
+                k: clean_supabase_value(v)
+                for k, v in row.items()
+            }
+            clean_data.append(clean_row)
+
+        supabase.table(table_name).upsert(clean_data).execute()
         return True
 
     except Exception as e:
         st.error(f"{table_name} 저장 실패: {e}")
         return False
 
+
 def get_multiple_available_ids(count):
     """[복구] v136의 핵심: 삭제된 번호를 찾아주는 ID 재사용 로직"""
     df = get_supabase_data("payments")
-    if df.empty: return list(range(1, count + 1))
+
+    if df.empty:
+        return list(range(1, count + 1))
+
     ids = sorted(df['id'].unique().tolist())
     available = []
     current = 1
+
     while len(available) < count:
         if current not in ids:
             available.append(current)
         current += 1
+
     return available
+
 
 def process_ecount_v136_cloud(file):
     """[복구] 이카운트 발주서 엑셀 정밀 분석기 (원본 로직 100% 동일)"""
     try:
         df = pd.read_excel(file, header=None)
-        raw_oid = str(df.iloc[1, 0]).split(":")[-1].strip() if ":" in str(df.iloc[1,0]) else str(df.iloc[1, 0])
+
+        raw_oid = (
+            str(df.iloc[1, 0]).split(":")[-1].strip()
+            if ":" in str(df.iloc[1, 0])
+            else str(df.iloc[1, 0])
+        )
+
         odate = smart_date(raw_oid.replace("-", "")[:8])
         
         vendor_raw = ""
+
         for i in range(len(df)):
-            if "수신" in str(df.iloc[i, 0]): 
+            if "수신" in str(df.iloc[i, 0]):
                 vendor_raw = str(df.iloc[i, 0]).split(":")[-1].strip()
                 break
                 
         v_master = get_supabase_data("vendors")
-        v_master['clean'] = v_master['거래처명'].apply(lambda x: re.sub(r'\s+', '', str(x)).lower())
-        match = v_master[v_master['clean'] == re.sub(r'\s+', '', vendor_raw).lower()]
+
+        if v_master.empty:
+            return False, f"거래처 정보가 없습니다: [{vendor_raw}]"
+
+        v_master['clean'] = v_master['거래처명'].apply(
+            lambda x: re.sub(r'\s+', '', str(x)).lower()
+        )
+
+        match = v_master[
+            v_master['clean'] == re.sub(r'\s+', '', vendor_raw).lower()
+        ]
         
-        if match.empty: return False, f"미등록 업체: [{vendor_raw}]"
+        if match.empty:
+            return False, f"미등록 업체: [{vendor_raw}]"
             
         v_fixed = match.iloc[0]['거래처명']
         v_type = match.iloc[0]['기본유형']
         
         f6_val = str(df.iloc[5, 5]) if len(df) > 5 else ""
-        curr = "USD" if "USD" in f6_val else ("CNY" if any(x in f6_val for x in ["중국", "CNY"]) else "한화")
+
+        curr = (
+            "USD"
+            if "USD" in f6_val
+            else ("CNY" if any(x in f6_val for x in ["중국", "CNY"]) else "한화")
+        )
         
         prods = df.iloc[6:, 1 if curr == "한화" else 2].dropna().astype(str).tolist()
-        prod_n = (prods[0].split("[")[0].strip() + (f" 외 {len(prods)-1}건" if len(prods)>1 else "")) if prods else "품목미상"
+
+        prod_n = (
+            prods[0].split("[")[0].strip()
+            + (f" 외 {len(prods) - 1}건" if len(prods) > 1 else "")
+            if prods
+            else "품목미상"
+        )
         
         l_idx = df.iloc[:, 5].last_valid_index()
-        total = to_float(df.iloc[l_idx, 5]) if curr != "한화" and l_idx else to_float(str(df.iloc[4, 0]).split(":")[-1])
+
+        total = (
+            to_float(df.iloc[l_idx, 5])
+            if curr != "한화" and l_idx
+            else to_float(str(df.iloc[4, 0]).split(":")[-1])
+        )
         
         upsert_supabase_data("orders", {
-            "발주번호": raw_oid, "발주일": odate, "거래처명": v_fixed, 
-            "상품명": prod_n, "유형": v_type, "통화": curr, "발주총액": total, "마감여부": 0
+            "발주번호": raw_oid,
+            "발주일": odate,
+            "거래처명": v_fixed,
+            "상품명": prod_n,
+            "유형": v_type,
+            "통화": curr,
+            "발주총액": total,
+            "마감여부": 0
         })
-        return True, None
-    except Exception as e: return False, str(e)
 
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
 # ==============================================================================
 # 3. 유틸리티 함수 (smart_date 등 v136 원본 보존)
 # ==============================================================================
@@ -241,32 +337,89 @@ if menu == "입금 등록":
 
         del st.session_state.pay_notice
 
+    def normalize_pay_currency(val):
+        cur = to_str(val).upper()
+
+        if cur in ["", "KRW", "WON", "원", "한화"]:
+            return "한화"
+        if cur in ["USD", "CNY"]:
+            return cur
+
+        return to_str(val) or "한화"
+
+    def get_vendor_row(vendor_df, vendor_name):
+        if vendor_df.empty or '거래처명' not in vendor_df.columns:
+            return None
+
+        match_df = vendor_df[
+            vendor_df['거래처명'].astype(str).str.strip() == str(vendor_name).strip()
+        ]
+
+        if match_df.empty:
+            return None
+
+        return match_df.iloc[0]
+
+    def get_vendor_field(vendor_row, field_name):
+        if vendor_row is None:
+            return ""
+
+        try:
+            return to_str(vendor_row.get(field_name))
+        except:
+            return ""
+
     v_master = get_supabase_data("vendors")
     o_data = get_supabase_data("orders")
-    o_active = o_data[o_data['마감여부'] == 0] if not o_data.empty else pd.DataFrame()
+
+    if not o_data.empty:
+        if '마감여부' not in o_data.columns:
+            o_data['마감여부'] = 0
+
+        o_data['마감여부'] = pd.to_numeric(
+            o_data['마감여부'],
+            errors='coerce'
+        ).fillna(0).astype(int)
+
+        o_active = o_data[o_data['마감여부'] == 0].copy()
+    else:
+        o_active = pd.DataFrame()
 
     col_input, col_excel = st.columns([1.5, 1])
 
     # -------------------------------
-    # 🔵 수기 입력
+    # 수기 입력
     # -------------------------------
     with col_input:
         st.subheader("1. 수기 직접 입력")
 
         form_key = st.session_state.pay_form_reset_key
 
+        order_options = ["없음"]
+
+        if not o_active.empty and '발주번호' in o_active.columns:
+            order_options += list(o_active['발주번호'].dropna().astype(str).unique())
+
         p_oid = st.selectbox(
             "발주번호 연동",
-            ["없음"] + (list(o_active['발주번호']) if not o_active.empty else []),
+            order_options,
             key=f"p_oid_{form_key}"
         )
 
-        if p_oid != "없음":
-            match = o_active[o_active['발주번호'] == p_oid].iloc[0]
-            auto_vn = match['거래처명']
-            auto_type = match['유형']
-            auto_prod = match['상품명']
-            auto_cur = match['통화']
+        if p_oid != "없음" and not o_active.empty:
+            match_df = o_active[o_active['발주번호'].astype(str) == str(p_oid)]
+
+            if not match_df.empty:
+                match = match_df.iloc[0]
+                auto_vn = to_str(match.get('거래처명'))
+                auto_type = to_str(match.get('유형'))
+                auto_prod = to_str(match.get('상품명'))
+                auto_cur = normalize_pay_currency(match.get('통화'))
+            else:
+                auto_vn = "선택"
+                auto_type = "선택"
+                auto_prod = ""
+                auto_cur = "한화"
         else:
             auto_vn = "선택"
             auto_type = "선택"
@@ -283,7 +436,12 @@ if menu == "입금 등록":
                 key=f"p_date_{auto_key}"
             )
 
-            vn_list = ["선택"] + (list(v_master['거래처명'].unique()) if not v_master.empty else [])
+            if not v_master.empty and '거래처명' in v_master.columns:
+                vendor_names = list(v_master['거래처명'].dropna().astype(str).unique())
+            else:
+                vendor_names = []
+
+            vn_list = ["선택"] + vendor_names
 
             p_vn = st.selectbox(
                 "거래처",
@@ -326,7 +484,7 @@ if menu == "입금 등록":
             r1c1, r1c2 = st.columns(2)
 
             p_dep = r1c1.number_input(
-                "실입금액 (발주통화 기준)",
+                "발주정산액 (발주통화 기준)",
                 value=0.0,
                 step=0.01,
                 format="%.2f",
@@ -359,7 +517,7 @@ if menu == "입금 등록":
                 key=f"p_pay_rate_{auto_key}"
             )
 
-            st.caption("실입금액과 선급금액은 발주통화 기준입니다. 실제지급액은 실제 돈이 나간 통화 기준입니다.")
+            st.caption("발주정산액과 선급금액은 발주통화 기준입니다. 실제지급액은 실제 돈이 나간 통화 기준입니다.")
 
             p_memo = st.text_input(
                 "비고 (송금 사유 등)",
@@ -374,67 +532,75 @@ if menu == "입금 등록":
                 elif p_ct == "선택":
                     st.error("유형을 선택하세요.")
 
-                elif p_dep == 0 and p_pre == 0:
+                elif p_dep == 0 and p_pre == 0 and p_real_amt == 0:
                     st.error("금액을 입력하세요.")
 
                 else:
-                    vi = v_master[v_master['거래처명'] == p_vn].iloc[0]
+                    vi = get_vendor_row(v_master, p_vn)
 
-                    dep_amount = round(float(p_dep), 2)
-                    pre_amount = round(float(p_pre), 2)
-                    real_amount = round(float(p_real_amt), 2)
-                    pay_rate = round(float(p_pay_rate), 6)
+                    if vi is None:
+                        st.error("선택한 거래처 정보를 찾을 수 없습니다.")
 
-                    base_amount = dep_amount if dep_amount != 0 else pre_amount
-
-                    if p_order_cur == p_real_cur:
-                        if real_amount == 0 and base_amount != 0:
-                            real_amount = base_amount
-                        if pay_rate == 0:
-                            pay_rate = 1.0
                     else:
-                        if real_amount == 0 and base_amount != 0 and pay_rate != 0:
-                            real_amount = round(base_amount * pay_rate, 2)
-                        elif pay_rate == 0 and base_amount != 0 and real_amount != 0:
-                            pay_rate = round(real_amount / base_amount, 6)
+                        dep_amount = round(float(p_dep), 2)
+                        pre_amount = round(float(p_pre), 2)
+                        real_amount = round(float(p_real_amt), 2)
+                        pay_rate = round(float(p_pay_rate), 6)
 
-                    save_ok = upsert_supabase_data("payments", {
-                        "id": get_multiple_available_ids(1)[0],
-                        "발주번호": p_oid if p_oid != "없음" else None,
-                        "입금일": p_date.strftime("%Y-%m-%d"),
-                        "유형": p_ct,
-                        "거래처명": p_vn,
-                        "상품명": p_pr,
+                        base_amount = dep_amount if dep_amount != 0 else pre_amount
 
-                        # 기존 호환용
-                        "통화": p_order_cur,
+                        if p_order_cur == p_real_cur:
+                            if real_amount == 0 and base_amount != 0:
+                                real_amount = base_amount
+                            if pay_rate == 0:
+                                pay_rate = 1.0
+                        else:
+                            if real_amount == 0 and base_amount != 0 and pay_rate != 0:
+                                real_amount = round(base_amount * pay_rate, 2)
+                            elif pay_rate == 0 and base_amount != 0 and real_amount != 0:
+                                pay_rate = round(real_amount / base_amount, 6)
 
-                        # 발주/정산 기준
-                        "발주통화": p_order_cur,
-                        "실입금액": dep_amount,
-                        "선급금액": pre_amount,
+                        if p_order_cur != p_real_cur and base_amount != 0 and real_amount == 0:
+                            st.error("발주통화와 실제지급통화가 다르면 실제지급액 또는 지급환율을 입력하세요.")
 
-                        # 실제 지급 기준
-                        "실제지급통화": p_real_cur,
-                        "실제지급액": real_amount,
-                        "지급환율": pay_rate,
+                        else:
+                            save_ok = upsert_supabase_data("payments", {
+                                "id": get_multiple_available_ids(1)[0],
+                                "발주번호": p_oid if p_oid != "없음" else "",
+                                "입금일": p_date.strftime("%Y-%m-%d"),
+                                "유형": p_ct,
+                                "거래처명": p_vn,
+                                "상품명": p_pr,
 
-                        "메모": p_memo,
-                        "은행": vi['은행'],
-                        "계좌번호": vi['계좌번호'],
-                        "예금주": vi['예금주']
-                    })
+                                # 기존 호환용 통화 컬럼
+                                "통화": p_order_cur,
 
-                    if save_ok:
-                        st.session_state.pay_form_reset_key += 1
-                        st.session_state.pay_notice = {
-                            "type": "success",
-                            "msg": "입금 내역 저장 완료"
-                        }
-                        st.rerun()
+                                # 발주/정산 기준
+                                "발주통화": p_order_cur,
+                                "실입금액": dep_amount,
+                                "선급금액": pre_amount,
+
+                                # 실제 지급 기준
+                                "실제지급통화": p_real_cur,
+                                "실제지급액": real_amount,
+                                "지급환율": pay_rate,
+
+                                "메모": p_memo,
+                                "은행": get_vendor_field(vi, '은행'),
+                                "계좌번호": get_vendor_field(vi, '계좌번호'),
+                                "예금주": get_vendor_field(vi, '예금주')
+                            })
+
+                            if save_ok:
+                                st.session_state.pay_form_reset_key += 1
+                                st.session_state.pay_notice = {
+                                    "type": "success",
+                                    "msg": "입금 내역 저장 완료"
+                                }
+                                st.rerun()
 
     # -------------------------------
-    # 🔵 CSV 업로드
+    # CSV 업로드
     # -------------------------------
     with col_excel:
         st.subheader("2. CSV 일괄 업로드")
@@ -442,7 +608,7 @@ if menu == "입금 등록":
         csv_template = pd.DataFrame(columns=[
             "발주번호", "거래처", "유형", "상품명",
             "입금일",
-            "발주통화", "실입금액", "선급금액",
+            "발주통화", "발주정산액", "선급금액",
             "실제지급통화", "실제지급액", "지급환율",
             "송금사유"
         ])
@@ -455,7 +621,7 @@ if menu == "입금 등록":
                 {
                     "발주번호": "20260417-1",
                     "입금일": "2026-04-17",
-                    "실입금액": 500000,
+                    "발주정산액": 500000,
                     "선급금액": 0,
                     "송금사유": "잔금 입금"
                 }
@@ -466,7 +632,7 @@ if menu == "입금 등록":
                 hide_index=True,
                 use_container_width=True,
                 column_config={
-                    "실입금액": st.column_config.NumberColumn("실입금액", format="%,.2f"),
+                    "발주정산액": st.column_config.NumberColumn("발주정산액", format="%,.2f"),
                     "선급금액": st.column_config.NumberColumn("선급금액", format="%,.2f")
                 }
             )
@@ -476,7 +642,7 @@ if menu == "입금 등록":
                 {
                     "발주번호": "20260417-2",
                     "입금일": "2026-04-17",
-                    "실입금액": 12600,
+                    "발주정산액": 12600,
                     "선급금액": 12600,
                     "실제지급통화": "USD",
                     "실제지급액": 1824.48,
@@ -490,14 +656,14 @@ if menu == "입금 등록":
                 hide_index=True,
                 use_container_width=True,
                 column_config={
-                    "실입금액": st.column_config.NumberColumn("실입금액", format="%,.2f"),
+                    "발주정산액": st.column_config.NumberColumn("발주정산액", format="%,.2f"),
                     "선급금액": st.column_config.NumberColumn("선급금액", format="%,.2f"),
                     "실제지급액": st.column_config.NumberColumn("실제지급액", format="%,.2f"),
                     "지급환율": st.column_config.NumberColumn("지급환율", format="%.6f")
                 }
             )
 
-            st.caption("실입금액과 선급금액은 발주통화 기준입니다.")
+            st.caption("발주정산액과 선급금액은 발주통화 기준입니다.")
             st.caption("실제지급액은 실제지급통화 기준입니다.")
             st.caption("발주통화와 실제지급통화가 같으면 실제지급통화, 실제지급액, 지급환율은 생략해도 됩니다.")
 
@@ -531,34 +697,59 @@ if menu == "입금 등록":
                 prod_v = to_str(r.get('상품명'))
                 memo_v = to_str(r.get('송금사유'))
 
-                dep_v = round(to_float(r.get('실입금액')), 2)
+                dep_v = round(to_float(r.get('발주정산액') if '발주정산액' in df_up.columns else r.get('실입금액')), 2)
                 pre_v = round(to_float(r.get('선급금액')), 2)
 
-                order_cur_input = to_str(r.get('발주통화')) or to_str(r.get('통화'))
-                real_cur_input = to_str(r.get('실제지급통화')) or to_str(r.get('실입금통화'))
+                order_cur_input = normalize_pay_currency(
+                    to_str(r.get('발주통화')) or to_str(r.get('통화'))
+                )
+
+                real_cur_input_raw = (
+                    to_str(r.get('실제지급통화')) or
+                    to_str(r.get('실입금통화'))
+                )
 
                 real_amt_v = round(to_float(r.get('실제지급액')), 2)
                 pay_rate_v = round(to_float(r.get('지급환율')), 6)
 
                 if not any([
                     oid_v, vn_v, date_v, type_v, prod_v, memo_v,
-                    order_cur_input, real_cur_input
+                    to_str(r.get('발주통화')),
+                    real_cur_input_raw
                 ]) and dep_v == 0 and pre_v == 0 and real_amt_v == 0 and pay_rate_v == 0:
                     skipped_count += 1
                     continue
 
-                match_o = (
-                    o_data[o_data['발주번호'] == oid_v].iloc[0]
-                    if oid_v and not o_data[o_data['발주번호'] == oid_v].empty
-                    else None
-                )
+                match_o = None
 
-                vn_f = match_o['거래처명'] if match_o is not None else vn_v
-                order_cur_v = order_cur_input or (match_o['통화'] if match_o is not None else "한화")
-                real_cur_v = real_cur_input or order_cur_v
+                if oid_v and not o_data.empty and '발주번호' in o_data.columns:
+                    match_df = o_data[o_data['발주번호'].astype(str) == oid_v]
+                    if not match_df.empty:
+                        match_o = match_df.iloc[0]
 
-                vi = v_master[v_master['거래처명'].str.lower() == vn_f.lower()].iloc[0] \
-                    if not v_master.empty and vn_f and not v_master[v_master['거래처명'].str.lower() == vn_f.lower()].empty else None
+                vn_f = to_str(match_o.get('거래처명')) if match_o is not None else vn_v
+                type_f = to_str(match_o.get('유형')) if match_o is not None else (type_v or "사입")
+                prod_f = to_str(match_o.get('상품명')) if match_o is not None else prod_v
+
+                if to_str(r.get('발주통화')) or to_str(r.get('통화')):
+                    order_cur_v = order_cur_input
+                elif match_o is not None:
+                    order_cur_v = normalize_pay_currency(match_o.get('통화'))
+                else:
+                    order_cur_v = "한화"
+
+                real_cur_v = normalize_pay_currency(real_cur_input_raw) if real_cur_input_raw else order_cur_v
+
+                vi = None
+
+                if not v_master.empty and vn_f and '거래처명' in v_master.columns:
+                    vendor_match_df = v_master[
+                        v_master['거래처명'].astype(str).str.lower().str.strip() ==
+                        vn_f.lower().strip()
+                    ]
+
+                    if not vendor_match_df.empty:
+                        vi = vendor_match_df.iloc[0]
 
                 base_amount = dep_v if dep_v != 0 else pre_v
 
@@ -575,13 +766,13 @@ if menu == "입금 등록":
 
                 up_list.append({
                     "id": ids[len(up_list)],
-                    "발주번호": oid_v or None,
+                    "발주번호": oid_v or "",
                     "입금일": smart_date(date_v),
-                    "유형": match_o['유형'] if match_o is not None else (type_v or "사입"),
+                    "유형": type_f,
                     "거래처명": vn_f,
-                    "상품명": match_o['상품명'] if match_o is not None else prod_v,
+                    "상품명": prod_f,
 
-                    # 기존 호환용
+                    # 기존 호환용 통화 컬럼
                     "통화": order_cur_v,
 
                     # 발주/정산 기준
@@ -595,9 +786,9 @@ if menu == "입금 등록":
                     "지급환율": pay_rate_v,
 
                     "메모": memo_v,
-                    "은행": vi['은행'] if vi is not None else "",
-                    "계좌번호": vi['계좌번호'] if vi is not None else "",
-                    "예금주": vi['예금주'] if vi is not None else ""
+                    "은행": get_vendor_field(vi, '은행'),
+                    "계좌번호": get_vendor_field(vi, '계좌번호'),
+                    "예금주": get_vendor_field(vi, '예금주')
                 })
 
             if not up_list:
@@ -615,7 +806,6 @@ if menu == "입금 등록":
                            + (f" / 빈 행 제외: {skipped_count}건" if skipped_count else "")
                 }
                 st.rerun()
-
 
 
 # --- [Tab 1] 발주서 등록 및 관리 ---
